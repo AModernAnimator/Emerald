@@ -2,14 +2,24 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>logix</title>
+  <title>logix editor</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
+<div class="menu">
+  <div class="file">
+    file
+    <div class="dropdown">
+      <div id="exportLogix">export as .logix</div>
+      <div id="exportJS">export as .js</div>
+    </div>
+  </div>
+</div>
+
 <div class="container">
   <div class="editor">
-    <textarea id="editor"></textarea>
+    <textarea id="editor" placeholder="write logix code here..."></textarea>
     <button id="run">run</button>
   </div>
 
