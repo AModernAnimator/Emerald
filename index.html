@@ -1,33 +1,15 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="UTF-8">
-  <title>logix editor</title>
-  <link rel="stylesheet" href="style.css">
+  <title>Emerald Basic Interpreter</title>
 </head>
 <body>
+  <h1>Emerald Basic Interpreter</h1>
+  <textarea id="code" rows="20" cols="70"></textarea><br>
+  <button onclick="runEmerald()">Run</button>
 
-<div class="menu">
-  <div class="file">
-    file
-    <div class="dropdown">
-      <div id="exportLogix">export as .logix</div>
-      <div id="exportJS">export as .js</div>
-    </div>
-  </div>
-</div>
+  <pre id="output"></pre>
 
-<div class="container">
-  <div class="editor">
-    <textarea id="editor"></textarea>
-    <button id="run">run</button>
-  </div>
-
-  <div class="preview">
-    <div id="console"></div>
-  </div>
-</div>
-
-<script src="commands.js"></script>
+  <script src="emerald.js"></script>
 </body>
 </html>
