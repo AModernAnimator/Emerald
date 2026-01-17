@@ -1,4 +1,5 @@
-# Emerald
+Emerald
+===============
 **© Copyright 2026 Emerald**
 
 ---
@@ -34,4 +35,53 @@ while(true)[
   delay=5000
   output.log="Hello world!"
 ]
+```
+
+# 📥 Install Emerald
+
+**Install Emerald in your repo:**
+
+ 1. Clone the repository
+
+  ```git clone https://github.com/AModernAnimator/Emerald.git```
+
+
+ 2. Navigate to the Basic folder
+
+  ```cd Emerald/Basic```
+
+
+ 3. Run the interpreter
+
+   ```python emerald.py <script.emlg>```
+
+# 🔧 Quick Start
+**✅ Create a script**
+
+Create a file called ```example.emlg```:
+```
+var x = 10
+while({x} > 0)[
+  output.log="Countdown: {x}"
+  delay=1000
+  var x = {x} - 1
+]
+```
+✅ Run it
+```python emerald.py example.emlg```
+
+📌 Notes
+
+- delay is measured in milliseconds
+
+- Variables use curly braces for interpolation:
+  ```ini
+  output.log="Hello {name}"
+  ```
+
+
+Comments can be:
+```arduino
+-- single line
+// multi-line //
 ```
