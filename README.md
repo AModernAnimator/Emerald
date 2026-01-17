@@ -4,6 +4,10 @@ Emerald
 
 ---
 
+[![Basic Latest Release](https://img.shields.io/github/v/release/AModernAnimator/Emerald?label=Basic%20Latest&style=for-the-badge)](https://github.com/AModernAnimator/Emerald/releases/tag/Basic)
+
+
+
 > Emerald is a scripting language created by **@AModernAnimator** and **@Sushi-byte-glitch**, designed for **web development**, **data management**, and **applications**.  
 > It comes in **3 versions**: **Basic**, **Dull**, and **Shine**, each increasing in complexity, power, and efficiency.
 
@@ -85,3 +89,4 @@ Comments can be:
 -- single line
 // multi-line //
 ```
+
