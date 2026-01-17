@@ -8,18 +8,12 @@
 [![badgey badge](https://img.shields.io/badge/Emerald_Basic-Latest-green)](https://github.com/AModernAnimator/Emerald/releases/tag/Basic)
 
 
-
-
-
-
-
-
 > Emerald is a scripting language created by **@AModernAnimator** and **@Sushi-byte-glitch**, designed for **web development**, **data management**, and **applications**.  
-> It comes in **3 versions**: **Basic**, **Dull**, and **Shine**, each increasing in complexity, power, and efficiency.
+> It comes in **3 versions**: **Basic**, **Dull**, and **Shine**, each increasing in complexity, power, and efficiency. *Current versions : Basic v.1.0 and Dull v.0.5 (in progress)*
 
 ---
 
-Emerald is inspired by **Python’s readability**, with some influences from **JavaScript**.
+Emerald is inspired by **Python’s readability**, with some influences from **JavaScript**, and derives from **Python**.
 
 ---
 
