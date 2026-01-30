@@ -1,4 +1,4 @@
-print"🚀 EMERALD MATH DEMO"
+print"Emerald Math Demo"
 print"=================="
 var [
   x = 10
@@ -7,6 +7,6 @@ var [
 print{x + y}
 print{x * y}
 print"Answer time!"
-input(plc("What's 2+2? "))
-print"LAST_INPUT was: " + str(LAST_INPUT)
+input(plc("What is 2+2? "))
+print"Last input was: " + str(LAST_INPUT)
 print"DONE!"
