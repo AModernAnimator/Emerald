@@ -11,7 +11,7 @@
 > Emerald is a high-level programming language written in Python, with Golang for the terminal created by **@AModernAnimator** & **@Sushi-byte-glitch**. It is designed for **backend**, **frontend**, and **data**.
 
 ### Installation
-  Install the .exe, tar.gz or .dmg Emerald Shell from the Releases.
+  Install the .exe or tar.gz Emerald Shell from the Releases.
 
 
 ### Emerald Shell Commands :
