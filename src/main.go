@@ -54,8 +54,10 @@ type Instr struct {
 }
 
 type Function struct {
-	Params []string
-	Code   []Instr
+	Params     []string
+	ParamTypes []ValueType
+	ReturnType ValueType
+	Code       []Instr
 }
 
 type Program struct {
@@ -75,6 +77,7 @@ const (
 type Token struct {
 	Kind tokenKind
 	Text string
+	Line int
 }
 
 type Compiler struct {
@@ -90,11 +93,69 @@ type loopCtx struct {
 	continueJumps []int
 }
 
+type ValueType int
+
+const (
+	typeUnknown ValueType = iota
+	typeInt
+	typeString
+	typeBool
+	typeNull
+	typeList
+	typeDict
+)
+
+func (t ValueType) String() string {
+	switch t {
+	case typeInt:
+		return "int"
+	case typeString:
+		return "string"
+	case typeBool:
+		return "bool"
+	case typeNull:
+		return "null"
+	case typeList:
+		return "list"
+	case typeDict:
+		return "dict"
+	default:
+		return "unknown"
+	}
+}
+
+type typeEnv struct {
+	vars   map[string]ValueType
+	parent *typeEnv
+}
+
+func newTypeEnv(parent *typeEnv) *typeEnv {
+	return &typeEnv{vars: map[string]ValueType{}, parent: parent}
+}
+
+func (e *typeEnv) get(name string) (ValueType, bool) {
+	for cur := e; cur != nil; cur = cur.parent {
+		if v, ok := cur.vars[name]; ok {
+			return v, true
+		}
+	}
+	return typeUnknown, false
+}
+
+func (e *typeEnv) getLocal(name string) (ValueType, bool) {
+	v, ok := e.vars[name]
+	return v, ok
+}
+
+func (e *typeEnv) setLocal(name string, t ValueType) {
+	e.vars[name] = t
+}
+
 func main() {
 	if len(os.Args) < 3 {
 		fmt.Println("Usage:")
-		fmt.Println("  emeraldc build <file.emer>")
-		fmt.Println("  emeraldc run <file.emer|file.emec>")
+		fmt.Println("  emerald build <file.emer>")
+		fmt.Println("  emerald run <file.emer|file.emec>")
 		os.Exit(1)
 	}
 
@@ -162,8 +223,12 @@ func compileFile(path string) (*Program, error) {
 		return nil, err
 	}
 	c := &Compiler{tokens: tokens, functions: map[string]Function{}}
+	if err := c.predeclareFunctions(); err != nil {
+		return nil, err
+	}
 	mainCode := []Instr{}
-	if err := c.compileBlock(&mainCode, nil); err != nil {
+	globalTypes := newTypeEnv(nil)
+	if err := c.compileBlock(&mainCode, nil, globalTypes, typeUnknown); err != nil {
 		return nil, err
 	}
 	prog := &Program{Version: 2, Main: mainCode, Functions: c.functions}
@@ -199,11 +264,12 @@ func tokenize(src string) ([]Token, error) {
 	var line strings.Builder
 	inString := false
 	var quote rune
+	lineNum := 1
 
 	flushLine := func() {
 		s := strings.TrimSpace(line.String())
 		if s != "" {
-			tokens = append(tokens, Token{Kind: tokLine, Text: s})
+			tokens = append(tokens, Token{Kind: tokLine, Text: s, Line: lineNum})
 		}
 		line.Reset()
 	}
@@ -223,12 +289,13 @@ func tokenize(src string) ([]Token, error) {
 			line.WriteRune(r)
 		case '{':
 			flushLine()
-			tokens = append(tokens, Token{Kind: tokLBrace, Text: "{"})
+			tokens = append(tokens, Token{Kind: tokLBrace, Text: "{", Line: lineNum})
 		case '}':
 			flushLine()
-			tokens = append(tokens, Token{Kind: tokRBrace, Text: "}"})
+			tokens = append(tokens, Token{Kind: tokRBrace, Text: "}", Line: lineNum})
 		case '\n':
 			flushLine()
+			lineNum++
 		case '\r':
 		default:
 			line.WriteRune(r)
@@ -254,7 +321,7 @@ func (c *Compiler) peek() *Token {
 	return &c.tokens[c.idx]
 }
 
-func (c *Compiler) compileBlock(code *[]Instr, loopStack []loopCtx) error {
+func (c *Compiler) compileBlock(code *[]Instr, loopStack []loopCtx, types *typeEnv, retType ValueType) error {
 	for {
 		t := c.next()
 		if t == nil {
@@ -264,7 +331,7 @@ func (c *Compiler) compileBlock(code *[]Instr, loopStack []loopCtx) error {
 			return nil
 		}
 		if t.Kind == tokLBrace {
-			return errors.New("unexpected '{'")
+			return fmt.Errorf("line %d: unexpected '{'", t.Line)
 		}
 
 		line := t.Text
@@ -273,32 +340,40 @@ func (c *Compiler) compileBlock(code *[]Instr, loopStack []loopCtx) error {
 		}
 
 		if strings.HasPrefix(line, "fnc ") {
-			name, params, err := parseFnDecl(line)
+			name, params, paramTypes, fnRet, err := parseFnDecl(line)
 			if err != nil {
-				return err
+				return fmt.Errorf("line %d: %w", t.Line, err)
 			}
 			if p := c.next(); p == nil || p.Kind != tokLBrace {
-				return errors.New("fnc must be followed by '{'")
+				return fmt.Errorf("line %d: fnc must be followed by '{'", t.Line)
 			}
 			fnCode := []Instr{}
-			if err := c.compileBlock(&fnCode, nil); err != nil {
+			fnTypes := newTypeEnv(types)
+			for i, p := range params {
+				if i < len(paramTypes) {
+					fnTypes.setLocal(p, paramTypes[i])
+				} else {
+					fnTypes.setLocal(p, typeUnknown)
+				}
+			}
+			if err := c.compileBlock(&fnCode, nil, fnTypes, fnRet); err != nil {
 				return err
 			}
-			c.functions[name] = Function{Params: params, Code: fnCode}
+			c.functions[name] = Function{Params: params, ParamTypes: paramTypes, ReturnType: fnRet, Code: fnCode}
 			continue
 		}
 
 		if strings.HasPrefix(line, "var") {
-			if err := c.compileVar(line, code); err != nil {
-				return err
+			if err := c.compileVar(line, code, types); err != nil {
+				return fmt.Errorf("line %d: %w", t.Line, err)
 			}
 			continue
 		}
 
 		if strings.HasPrefix(line, "print(") && strings.HasSuffix(line, ")") {
 			inner := strings.TrimSpace(line[len("print(") : len(line)-1])
-			if err := c.compileExpr(inner, code); err != nil {
-				return err
+			if err := c.compileExpr(inner, code, types); err != nil {
+				return fmt.Errorf("line %d: %w", t.Line, err)
 			}
 			*code = append(*code, Instr{Op: OP_PRINT})
 			continue
@@ -308,7 +383,13 @@ func (c *Compiler) compileBlock(code *[]Instr, loopStack []loopCtx) error {
 			inner := strings.TrimSpace(line[len("input(plc(") : len(line)-2])
 			s, ok := parseStringLiteral(inner)
 			if !ok {
-				return errors.New("input requires a string literal prompt")
+				return fmt.Errorf("line %d: input requires a string literal prompt", t.Line)
+			}
+			if types != nil {
+				if existing, ok := types.get("LAST_INPUT"); ok && existing != typeString {
+					return fmt.Errorf("line %d: LAST_INPUT is not string", t.Line)
+				}
+				types.setLocal("LAST_INPUT", typeString)
 			}
 			*code = append(*code, Instr{Op: OP_INPUT, Str: s})
 			continue
@@ -316,8 +397,21 @@ func (c *Compiler) compileBlock(code *[]Instr, loopStack []loopCtx) error {
 
 		if strings.HasPrefix(line, "wait(") && strings.HasSuffix(line, ")") {
 			inner := strings.TrimSpace(line[len("wait(") : len(line)-1])
-			if err := c.compileExpr(inner, code); err != nil {
-				return err
+			exprNode, err := parseExprAst(inner)
+			if err != nil {
+				return fmt.Errorf("line %d: %w", t.Line, err)
+			}
+			if types != nil {
+				et, err := c.inferExprType(exprNode, types)
+				if err != nil {
+					return fmt.Errorf("line %d: %w", t.Line, err)
+				}
+				if et != typeUnknown && et != typeInt {
+					return fmt.Errorf("line %d: wait expects int milliseconds", t.Line)
+				}
+			}
+			if err := c.compileExprNode(exprNode, code); err != nil {
+				return fmt.Errorf("line %d: %w", t.Line, err)
 			}
 			*code = append(*code, Instr{Op: OP_WAIT})
 			continue
@@ -325,8 +419,8 @@ func (c *Compiler) compileBlock(code *[]Instr, loopStack []loopCtx) error {
 
 		if strings.HasPrefix(line, "check ") {
 			inner := strings.TrimSpace(strings.TrimPrefix(line, "check "))
-			if err := c.compileExpr(inner, code); err != nil {
-				return err
+			if err := c.compileExpr(inner, code, types); err != nil {
+				return fmt.Errorf("line %d: %w", t.Line, err)
 			}
 			*code = append(*code, Instr{Op: OP_CHECK, Str: inner})
 			continue
@@ -334,7 +428,7 @@ func (c *Compiler) compileBlock(code *[]Instr, loopStack []loopCtx) error {
 
 		if line == "brk" {
 			if len(loopStack) == 0 {
-				return errors.New("brk used outside loop")
+				return fmt.Errorf("line %d: brk used outside loop", t.Line)
 			}
 			idx := len(*code)
 			*code = append(*code, Instr{Op: OP_JMP, Int: -1})
@@ -344,7 +438,7 @@ func (c *Compiler) compileBlock(code *[]Instr, loopStack []loopCtx) error {
 
 		if line == "cont" {
 			if len(loopStack) == 0 {
-				return errors.New("cont used outside loop")
+				return fmt.Errorf("line %d: cont used outside loop", t.Line)
 			}
 			idx := len(*code)
 			*code = append(*code, Instr{Op: OP_JMP, Int: -1})
@@ -355,11 +449,30 @@ func (c *Compiler) compileBlock(code *[]Instr, loopStack []loopCtx) error {
 		if line == "return" || strings.HasPrefix(line, "return ") {
 			expr := strings.TrimSpace(strings.TrimPrefix(line, "return"))
 			if expr != "" {
-				if err := c.compileExpr(expr, code); err != nil {
-					return err
+				exprNode, err := parseExprAst(expr)
+				if err != nil {
+					return fmt.Errorf("line %d: %w", t.Line, err)
+				}
+				if types != nil {
+					exprType, err := c.inferExprType(exprNode, types)
+					if err != nil {
+						return fmt.Errorf("line %d: %w", t.Line, err)
+					}
+					if retType != typeUnknown && exprType == typeUnknown {
+						return fmt.Errorf("line %d: type mismatch: return is %s, got %s", t.Line, retType.String(), exprType.String())
+					}
+					if retType != typeUnknown && !assignable(retType, exprType) {
+						return fmt.Errorf("line %d: type mismatch: return is %s, got %s", t.Line, retType.String(), exprType.String())
+					}
+				}
+				if err := c.compileExprNode(exprNode, code); err != nil {
+					return fmt.Errorf("line %d: %w", t.Line, err)
 				}
 				*code = append(*code, Instr{Op: OP_RET})
 			} else {
+				if retType != typeUnknown && !assignable(retType, typeNull) {
+					return fmt.Errorf("line %d: type mismatch: return is %s, got %s", t.Line, retType.String(), typeNull.String())
+				}
 				*code = append(*code, Instr{Op: OP_PUSH_NULL})
 				*code = append(*code, Instr{Op: OP_RET})
 			}
@@ -369,14 +482,14 @@ func (c *Compiler) compileBlock(code *[]Instr, loopStack []loopCtx) error {
 		if strings.HasPrefix(line, "for(") && strings.HasSuffix(line, ")") {
 			cond := strings.TrimSpace(line[len("for(") : len(line)-1])
 			if p := c.next(); p == nil || p.Kind != tokLBrace {
-				return errors.New("for must be followed by '{'")
+				return fmt.Errorf("line %d: for must be followed by '{'", t.Line)
 			}
 			loopStart := len(*code)
 			hasCond := strings.ToLower(cond) != "true"
 			var jmpIfFalseIdx int
 			if hasCond {
-				if err := c.compileExpr(cond, code); err != nil {
-					return err
+				if err := c.compileExpr(cond, code, types); err != nil {
+					return fmt.Errorf("line %d: %w", t.Line, err)
 				}
 				jmpIfFalseIdx = len(*code)
 				*code = append(*code, Instr{Op: OP_JMP_IF_FALSE, Int: -1})
@@ -384,7 +497,7 @@ func (c *Compiler) compileBlock(code *[]Instr, loopStack []loopCtx) error {
 
 			ctx := loopCtx{start: loopStart}
 			loopStack = append(loopStack, ctx)
-			if err := c.compileBlock(code, loopStack); err != nil {
+			if err := c.compileBlock(code, loopStack, types, retType); err != nil {
 				return err
 			}
 			*code = append(*code, Instr{Op: OP_JMP, Int: loopStart})
@@ -406,17 +519,17 @@ func (c *Compiler) compileBlock(code *[]Instr, loopStack []loopCtx) error {
 		if strings.HasPrefix(line, "while(") && strings.HasSuffix(line, ")") {
 			cond := strings.TrimSpace(line[len("while(") : len(line)-1])
 			if p := c.next(); p == nil || p.Kind != tokLBrace {
-				return errors.New("while must be followed by '{'")
+				return fmt.Errorf("line %d: while must be followed by '{'", t.Line)
 			}
 			loopStart := len(*code)
-			if err := c.compileExpr(cond, code); err != nil {
-				return err
+			if err := c.compileExpr(cond, code, types); err != nil {
+				return fmt.Errorf("line %d: %w", t.Line, err)
 			}
 			jmpIfFalseIdx := len(*code)
 			*code = append(*code, Instr{Op: OP_JMP_IF_FALSE, Int: -1})
 			ctx := loopCtx{start: loopStart}
 			loopStack = append(loopStack, ctx)
-			if err := c.compileBlock(code, loopStack); err != nil {
+			if err := c.compileBlock(code, loopStack, types, retType); err != nil {
 				return err
 			}
 			*code = append(*code, Instr{Op: OP_JMP, Int: loopStart})
@@ -438,39 +551,72 @@ func (c *Compiler) compileBlock(code *[]Instr, loopStack []loopCtx) error {
 			name := strings.TrimSpace(parts[0])
 			expr := strings.TrimSpace(parts[1])
 			if name == "" {
-				return errors.New("invalid assignment")
+				return fmt.Errorf("line %d: invalid assignment", t.Line)
 			}
-			if err := c.compileExpr(expr, code); err != nil {
-				return err
+			if strings.Contains(name, "(") || strings.Contains(name, ")") {
+				return fmt.Errorf("line %d: type annotations are only allowed in var declarations", t.Line)
+			}
+			if !isIdent(name) {
+				return fmt.Errorf("line %d: invalid assignment target", t.Line)
+			}
+			exprNode, err := parseExprAst(expr)
+			if err != nil {
+				return fmt.Errorf("line %d: %w", t.Line, err)
+			}
+			if types != nil {
+				exprType, err := c.inferExprType(exprNode, types)
+				if err != nil {
+					return fmt.Errorf("line %d: %w", t.Line, err)
+				}
+				if existing, ok := types.getLocal(name); ok {
+					if existing != typeUnknown && exprType == typeUnknown {
+						return fmt.Errorf("line %d: type mismatch: %s is %s, got %s", t.Line, name, existing.String(), exprType.String())
+					}
+					if !assignable(existing, exprType) {
+						return fmt.Errorf("line %d: type mismatch: %s is %s, got %s", t.Line, name, existing.String(), exprType.String())
+					}
+				} else {
+					if exprType != typeUnknown {
+						types.setLocal(name, exprType)
+					} else {
+						types.setLocal(name, typeUnknown)
+					}
+				}
+			}
+			if err := c.compileExprNode(exprNode, code); err != nil {
+				return fmt.Errorf("line %d: %w", t.Line, err)
 			}
 			*code = append(*code, Instr{Op: OP_STORE, Str: name})
 			continue
 		}
 
 		if strings.HasSuffix(line, ")") {
-			if err := c.compileExpr(line, code); err == nil {
+			if err := c.compileExpr(line, code, types); err == nil {
 				*code = append(*code, Instr{Op: OP_POP})
 				continue
 			}
 		}
 
-		return fmt.Errorf("unknown statement: %s", line)
+		return fmt.Errorf("line %d: unknown statement: %s", t.Line, line)
 	}
 }
 
-func parseFnDecl(line string) (string, []string, error) {
+func parseFnDecl(line string) (string, []string, []ValueType, ValueType, error) {
 	rest := strings.TrimSpace(strings.TrimPrefix(line, "fnc "))
 	if rest == "" {
-		return "", nil, errors.New("fnc requires a name")
+		return "", nil, nil, typeUnknown, errors.New("fnc requires a name")
 	}
 	name := rest
 	params := []string{}
+	paramTypes := []ValueType{}
+	retType := typeUnknown
 	if i := strings.Index(rest, "("); i != -1 {
-		if !strings.HasSuffix(rest, ")") {
-			return "", nil, errors.New("fnc params must end with ')' before '{'")
+		closeIdx := findMatchingParen(rest, i)
+		if closeIdx == -1 {
+			return "", nil, nil, typeUnknown, errors.New("fnc params must end with ')' before '{'")
 		}
 		name = strings.TrimSpace(rest[:i])
-		inner := strings.TrimSpace(rest[i+1 : len(rest)-1])
+		inner := strings.TrimSpace(rest[i+1 : closeIdx])
 		if inner != "" {
 			parts := splitTopLevel(inner, ',')
 			for _, p := range parts {
@@ -478,17 +624,43 @@ func parseFnDecl(line string) (string, []string, error) {
 				if p == "" {
 					continue
 				}
-				params = append(params, p)
+				pname, ptype, err := parseParamSpec(p)
+				if err != nil {
+					return "", nil, nil, typeUnknown, err
+				}
+				params = append(params, pname)
+				paramTypes = append(paramTypes, ptype)
 			}
+		}
+		restAfter := strings.TrimSpace(rest[closeIdx+1:])
+		if restAfter != "" {
+			if !strings.HasPrefix(restAfter, "(") || !strings.HasSuffix(restAfter, ")") {
+				return "", nil, nil, typeUnknown, errors.New("fnc return type must be in parentheses")
+			}
+			rt := strings.TrimSpace(restAfter[1 : len(restAfter)-1])
+			if rt == "" {
+				return "", nil, nil, typeUnknown, errors.New("fnc return type is empty")
+			}
+			parsed, ok := parseTypeName(rt)
+			if !ok {
+				return "", nil, nil, typeUnknown, fmt.Errorf("unknown type: %s", rt)
+			}
+			retType = parsed
 		}
 	}
 	if name == "" {
-		return "", nil, errors.New("fnc requires a name")
+		return "", nil, nil, typeUnknown, errors.New("fnc requires a name")
 	}
-	return name, params, nil
+	if !isIdent(name) {
+		return "", nil, nil, typeUnknown, errors.New("invalid fnc name")
+	}
+	if hasDuplicate(params) {
+		return "", nil, nil, typeUnknown, errors.New("duplicate parameter name")
+	}
+	return name, params, paramTypes, retType, nil
 }
 
-func (c *Compiler) compileVar(line string, code *[]Instr) error {
+func (c *Compiler) compileVar(line string, code *[]Instr, types *typeEnv) error {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "var" {
 		if p := c.next(); p == nil || p.Kind != tokLBrace {
@@ -501,7 +673,7 @@ func (c *Compiler) compileVar(line string, code *[]Instr) error {
 			if spec == "" {
 				continue
 			}
-			if err := c.compileVarSpec(spec, code); err != nil {
+			if err := c.compileVarSpec(spec, code, types); err != nil {
 				return err
 			}
 		}
@@ -523,13 +695,13 @@ func (c *Compiler) compileVar(line string, code *[]Instr) error {
 				if s == "" {
 					continue
 				}
-				if err := c.compileVarSpec(s, code); err != nil {
+				if err := c.compileVarSpec(s, code, types); err != nil {
 					return err
 				}
 			}
 			return nil
 		}
-		return c.compileVarSpec(spec, code)
+		return c.compileVarSpec(spec, code, types)
 	}
 
 	return nil
@@ -563,20 +735,57 @@ func (c *Compiler) collectBlockText() string {
 	}
 	return b.String()
 }
-func (c *Compiler) compileVarSpec(spec string, code *[]Instr) error {
+func (c *Compiler) compileVarSpec(spec string, code *[]Instr, types *typeEnv) error {
 	name, typ, expr, hasExpr, err := parseVarSpec(spec)
 	if err != nil {
 		return err
 	}
+	var declaredType ValueType
+	if typ != "" {
+		var ok bool
+		declaredType, ok = parseTypeName(typ)
+		if !ok {
+			return fmt.Errorf("unknown type: %s", typ)
+		}
+	}
 	if !hasExpr {
+		if types != nil {
+			if declaredType == typeUnknown {
+				types.setLocal(name, typeUnknown)
+			} else {
+				types.setLocal(name, declaredType)
+			}
+		}
 		*code = append(*code, Instr{Op: OP_PUSH_NULL})
 		*code = append(*code, Instr{Op: OP_STORE, Str: name})
 		return nil
 	}
-	if err := c.compileExpr(expr, code); err != nil {
+	exprNode, err := parseExprAst(expr)
+	if err != nil {
 		return err
 	}
-	_ = typ
+	if types != nil {
+		exprType, err := c.inferExprType(exprNode, types)
+		if err != nil {
+			return err
+		}
+		if declaredType != typeUnknown {
+			if exprType == typeUnknown {
+				return fmt.Errorf("type mismatch: %s is %s, got %s", name, declaredType.String(), exprType.String())
+			}
+			if !assignable(declaredType, exprType) {
+				return fmt.Errorf("type mismatch: %s is %s, got %s", name, declaredType.String(), exprType.String())
+			}
+			types.setLocal(name, declaredType)
+		} else if exprType != typeUnknown {
+			types.setLocal(name, exprType)
+		} else {
+			types.setLocal(name, typeUnknown)
+		}
+	}
+	if err := c.compileExprNode(exprNode, code); err != nil {
+		return err
+	}
 	*code = append(*code, Instr{Op: OP_STORE, Str: name})
 	return nil
 }
@@ -615,7 +824,87 @@ func parseVarSpec(spec string) (name string, typ string, expr string, hasExpr bo
 	if name == "" {
 		return "", "", "", false, errors.New("invalid var name")
 	}
+	if !isIdent(name) {
+		return "", "", "", false, errors.New("invalid var name")
+	}
 	return name, typ, expr, hasExpr, nil
+}
+
+func parseTypeName(s string) (ValueType, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "int":
+		return typeInt, true
+	case "str", "string":
+		return typeString, true
+	case "bool":
+		return typeBool, true
+	case "null":
+		return typeNull, true
+	case "list":
+		return typeList, true
+	case "dict", "table":
+		return typeDict, true
+	default:
+		return typeUnknown, false
+	}
+}
+
+func assignable(target ValueType, expr ValueType) bool {
+	if target == typeUnknown {
+		return true
+	}
+	if expr == typeUnknown {
+		return false
+	}
+	if expr == typeNull {
+		return true
+	}
+	return target == expr
+}
+
+func parseParamSpec(spec string) (string, ValueType, error) {
+	name, typ, _, _, err := parseVarSpec(spec)
+	if err != nil {
+		return "", typeUnknown, err
+	}
+	if typ == "" {
+		return name, typeUnknown, nil
+	}
+	t, ok := parseTypeName(typ)
+	if !ok {
+		return "", typeUnknown, fmt.Errorf("unknown type: %s", typ)
+	}
+	return name, t, nil
+}
+
+func findMatchingParen(s string, openIdx int) int {
+	if openIdx < 0 || openIdx >= len(s) || s[openIdx] != '(' {
+		return -1
+	}
+	depth := 0
+	for i := openIdx; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func hasDuplicate(items []string) bool {
+	seen := map[string]struct{}{}
+	for _, it := range items {
+		if _, ok := seen[it]; ok {
+			return true
+		}
+		seen[it] = struct{}{}
+	}
+	return false
 }
 
 func splitTopLevel(s string, sep rune) []string {
@@ -1058,20 +1347,208 @@ func isDigit(b byte) bool {
 	return b >= '0' && b <= '9'
 }
 
-func (c *Compiler) compileExpr(expr string, code *[]Instr) error {
-	toks, err := lexExpr(expr)
+func (c *Compiler) compileExpr(expr string, code *[]Instr, types *typeEnv) error {
+	root, err := parseExprAst(expr)
 	if err != nil {
 		return err
+	}
+	if types != nil {
+		if _, err := c.inferExprType(root, types); err != nil {
+			return err
+		}
+	}
+	return c.compileExprNode(root, code)
+}
+
+func (c *Compiler) predeclareFunctions() error {
+	for _, t := range c.tokens {
+		if t.Kind != tokLine {
+			continue
+		}
+		if !strings.HasPrefix(t.Text, "fnc ") {
+			continue
+		}
+		name, params, paramTypes, retType, err := parseFnDecl(t.Text)
+		if err != nil {
+			return fmt.Errorf("line %d: %w", t.Line, err)
+		}
+		if _, exists := c.functions[name]; exists {
+			return fmt.Errorf("line %d: duplicate function name: %s", t.Line, name)
+		}
+		c.functions[name] = Function{Params: params, ParamTypes: paramTypes, ReturnType: retType}
+	}
+	return nil
+}
+
+func parseExprAst(expr string) (*Expr, error) {
+	toks, err := lexExpr(expr)
+	if err != nil {
+		return nil, err
 	}
 	p := &exprParser{tokens: toks}
 	root, err := p.parseExpr()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if p.peek().kind != exTokEOF {
-		return errors.New("unexpected trailing tokens")
+		return nil, errors.New("unexpected trailing tokens")
 	}
-	return c.compileExprNode(root, code)
+	return root, nil
+}
+
+func (c *Compiler) inferExprType(node *Expr, types *typeEnv) (ValueType, error) {
+	switch node.Kind {
+	case exprLiteral:
+		switch node.LitKind {
+		case "int":
+			return typeInt, nil
+		case "string":
+			return typeString, nil
+		case "bool":
+			return typeBool, nil
+		case "null":
+			return typeNull, nil
+		default:
+			return typeUnknown, nil
+		}
+	case exprIdent:
+		if types == nil {
+			return typeUnknown, nil
+		}
+		if v, ok := types.get(node.Name); ok {
+			return v, nil
+		}
+		return typeUnknown, nil
+	case exprUnary:
+		inner, err := c.inferExprType(node.Left, types)
+		if err != nil {
+			return typeUnknown, err
+		}
+		switch node.Op {
+		case "not":
+			return typeBool, nil
+		case "-":
+			if inner != typeUnknown && inner != typeInt {
+				return typeUnknown, errors.New("unary '-' expects int")
+			}
+			if inner == typeUnknown {
+				return typeUnknown, nil
+			}
+			return typeInt, nil
+		default:
+			return typeUnknown, fmt.Errorf("unsupported unary op: %s", node.Op)
+		}
+	case exprBinary:
+		lt, err := c.inferExprType(node.Left, types)
+		if err != nil {
+			return typeUnknown, err
+		}
+		rt, err := c.inferExprType(node.Right, types)
+		if err != nil {
+			return typeUnknown, err
+		}
+		switch node.Op {
+		case "+":
+			if lt != typeUnknown && rt != typeUnknown {
+				if lt == typeInt && rt == typeInt {
+					return typeInt, nil
+				}
+				if lt == typeList && rt == typeList {
+					return typeList, nil
+				}
+				if lt == typeString || rt == typeString {
+					return typeString, nil
+				}
+				return typeUnknown, errors.New("'+' expects int, string, or list")
+			}
+			return typeUnknown, nil
+		case "-":
+			if lt != typeUnknown && lt != typeInt {
+				return typeUnknown, errors.New("'-' expects int")
+			}
+			if rt != typeUnknown && rt != typeInt {
+				return typeUnknown, errors.New("'-' expects int")
+			}
+			if lt == typeInt && rt == typeInt {
+				return typeInt, nil
+			}
+			return typeUnknown, nil
+		case "*":
+			if lt != typeUnknown && lt != typeInt {
+				return typeUnknown, errors.New("'*' expects int")
+			}
+			if rt != typeUnknown && rt != typeInt {
+				return typeUnknown, errors.New("'*' expects int")
+			}
+			if lt == typeInt && rt == typeInt {
+				return typeInt, nil
+			}
+			return typeUnknown, nil
+		case "/":
+			if lt != typeUnknown && lt != typeInt {
+				return typeUnknown, errors.New("'/' expects int")
+			}
+			if rt != typeUnknown && rt != typeInt {
+				return typeUnknown, errors.New("'/' expects int")
+			}
+			if lt == typeInt && rt == typeInt {
+				return typeInt, nil
+			}
+			return typeUnknown, nil
+		case "==", "!=":
+			return typeBool, nil
+		case "<", ">":
+			if lt != typeUnknown && rt != typeUnknown {
+				if lt == typeInt && rt == typeInt {
+					return typeBool, nil
+				}
+				if lt == typeString && rt == typeString {
+					return typeBool, nil
+				}
+				return typeUnknown, errors.New("'<' and '>' expect int or string")
+			}
+			return typeBool, nil
+		case "and", "or":
+			return typeBool, nil
+		default:
+			return typeUnknown, fmt.Errorf("unsupported op: %s", node.Op)
+		}
+	case exprCall:
+		switch node.Name {
+		case "table", "dict":
+			return typeDict, nil
+		default:
+			fn, ok := c.functions[node.Name]
+			if !ok {
+				return typeUnknown, nil
+			}
+			if len(node.Args) != len(fn.Params) {
+				return typeUnknown, fmt.Errorf("function %s expects %d args, got %d", node.Name, len(fn.Params), len(node.Args))
+			}
+			for i, arg := range node.Args {
+				at, err := c.inferExprType(arg, types)
+				if err != nil {
+					return typeUnknown, err
+				}
+				if i < len(fn.ParamTypes) && fn.ParamTypes[i] != typeUnknown {
+					if at == typeUnknown {
+						return typeUnknown, fmt.Errorf("type mismatch: %s arg %d is %s, got %s", node.Name, i+1, fn.ParamTypes[i].String(), at.String())
+					}
+					if !assignable(fn.ParamTypes[i], at) {
+						return typeUnknown, fmt.Errorf("type mismatch: %s arg %d is %s, got %s", node.Name, i+1, fn.ParamTypes[i].String(), at.String())
+					}
+				}
+			}
+			if fn.ReturnType == typeUnknown {
+				return typeUnknown, nil
+			}
+			return fn.ReturnType, nil
+		}
+	case exprList:
+		return typeList, nil
+	default:
+		return typeUnknown, errors.New("unknown expr")
+	}
 }
 
 func (c *Compiler) compileExprNode(node *Expr, code *[]Instr) error {
