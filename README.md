@@ -21,7 +21,7 @@ This document defines the **surface syntax**, **keywords**, **statements**, **ex
 ## 1. Files
 
 * **Source files:** `.emer`
-* **Compiled bytecode:** `.emc` (cache for VM execution)
+* **Compiled bytecode:** `.emec` (cache for VM execution)
 
 ---
 
